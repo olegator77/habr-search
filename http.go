@@ -122,10 +122,10 @@ func GetPostHandler(ctx *fasthttp.RequestCtx) {
 
 func StartHTTP() {
 	router := fasthttprouter.New()
-	router.GET("/search_posts", SearchPostsHandler)
-	router.GET("/search_comments", SearchCommentsHandler)
-	router.GET("/posts/:id", GetPostHandler)
-	router.GET("/posts", GetPostsHandler)
+	router.GET("/api/search_posts", SearchPostsHandler)
+	router.GET("/api/search_comments", SearchCommentsHandler)
+	router.GET("/api/posts/:id", GetPostHandler)
+	router.GET("/api/posts", GetPostsHandler)
 	log.Printf("Starting listen fasthttp on 8881")
 	if err := fasthttp.ListenAndServe(":8881", router.Handler); err != nil {
 		panic(err)
