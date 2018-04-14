@@ -3,6 +3,7 @@ package main
 // Import package
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"strconv"
 
@@ -15,16 +16,27 @@ type ErrorResponce struct {
 	Error   string `json:"error"`
 }
 
+type HabrPostView struct {
+	*HabrPost
+	Link  string `json:"link"`
+	Image string `json:"image"`
+}
+
 type PostsResponce struct {
-	Items      []*HabrPost `json:"items"`
-	TotalCount int         `json:"total_count,omitempty"`
-	Success    bool        `json:"success"`
+	Items      []HabrPostView `json:"items"`
+	TotalCount int            `json:"total_count,omitempty"`
+	Success    bool           `json:"success"`
+}
+
+type HabrCommentView struct {
+	*HabrComment
+	Link string `json:"link"`
 }
 
 type CommentsResponce struct {
-	Items      []*HabrComment `json:"items"`
-	TotalCount int            `json:"total_count,omitempty"`
-	Success    bool           `json:"success"`
+	Items      []HabrCommentView `json:"items"`
+	TotalCount int               `json:"total_count,omitempty"`
+	Success    bool              `json:"success"`
 }
 
 func respError(ctx *fasthttp.RequestCtx, httpCode int, err error) {
@@ -35,6 +47,41 @@ func respError(ctx *fasthttp.RequestCtx, httpCode int, err error) {
 	ctx.SetStatusCode(httpCode)
 	ret, _ := json.Marshal(resp)
 	ctx.Write(ret)
+}
+
+func respJSON(ctx *fasthttp.RequestCtx, data interface{}) {
+	ctx.SetStatusCode(200)
+	ctx.SetContentType("application/json; charset=utf-8")
+	ret, _ := json.Marshal(data)
+	ctx.Write(ret)
+}
+
+func convertComments(in []*HabrComment) (out []HabrCommentView) {
+	out = make([]HabrCommentView, 0, len(in))
+	for _, comment := range in {
+		cv := HabrCommentView{
+			HabrComment: comment,
+			Link:        fmt.Sprintf("https://habrahabr.ru/post/%d/#comment_%d", comment.PostID, comment.ID),
+		}
+		out = append(out, cv)
+	}
+	return out
+}
+
+func convertPosts(in []*HabrPost) (out []HabrPostView) {
+	out = make([]HabrPostView, 0, len(in))
+	for _, post := range in {
+		pv := HabrPostView{
+			HabrPost: post,
+			Link:     fmt.Sprintf("https://habrahabr.ru/post/%d/", post.ID),
+		}
+		if post.HasImage {
+			pv.Image = fmt.Sprintf("http://habr-demo.reindexer.org/images/%d.jpg", post.ID)
+		}
+
+		out = append(out, pv)
+	}
+	return out
 }
 
 func SearchPostsHandler(ctx *fasthttp.RequestCtx) {
@@ -50,13 +97,12 @@ func SearchPostsHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp := PostsResponce{
-		Items:      items,
+		Items:      convertPosts(items),
 		TotalCount: total,
 		Success:    true,
 	}
 
-	ret, _ := json.Marshal(resp)
-	ctx.Write(ret)
+	respJSON(ctx, resp)
 }
 
 func GetPostsHandler(ctx *fasthttp.RequestCtx) {
@@ -74,13 +120,12 @@ func GetPostsHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 	resp := PostsResponce{
-		Items:      items,
+		Items:      convertPosts(items),
 		TotalCount: total,
 		Success:    true,
 	}
 
-	ret, _ := json.Marshal(resp)
-	ctx.Write(ret)
+	respJSON(ctx, resp)
 }
 
 func SearchCommentsHandler(ctx *fasthttp.RequestCtx) {
@@ -96,13 +141,12 @@ func SearchCommentsHandler(ctx *fasthttp.RequestCtx) {
 	}
 
 	resp := CommentsResponce{
-		Items:      items,
+		Items:      convertComments(items),
 		TotalCount: total,
 		Success:    true,
 	}
 
-	ret, _ := json.Marshal(resp)
-	ctx.Write(ret)
+	respJSON(ctx, resp)
 }
 
 func GetPostHandler(ctx *fasthttp.RequestCtx) {
@@ -116,18 +160,17 @@ func GetPostHandler(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
-	ret, _ := json.Marshal(item)
-	ctx.Write(ret)
+	respJSON(ctx, item)
 }
 
-func StartHTTP() {
+func StartHTTP(addr string) {
 	router := fasthttprouter.New()
 	router.GET("/api/search_posts", SearchPostsHandler)
 	router.GET("/api/search_comments", SearchCommentsHandler)
 	router.GET("/api/posts/:id", GetPostHandler)
 	router.GET("/api/posts", GetPostsHandler)
-	log.Printf("Starting listen fasthttp on 8881")
-	if err := fasthttp.ListenAndServe(":8881", router.Handler); err != nil {
+	log.Printf("Starting listen fasthttp on %s", addr)
+	if err := fasthttp.ListenAndServe(addr, router.Handler); err != nil {
 		panic(err)
 	}
 }

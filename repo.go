@@ -5,31 +5,38 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"os"
 
 	"io/ioutil"
 
 	"git.itv.restr.im/itv-backend/reindexer"
 	_ "git.itv.restr.im/itv-backend/reindexer/bindings/builtin"
-	_ "git.itv.restr.im/itv-backend/reindexer/pprof"
+	// _ "git.itv.restr.im/itv-backend/reindexer/pprof"
 )
 
 type HabrComment struct {
 	ID     int    `reindex:"id,,pk" json:"id"`
-	PostID int    `reindex:"post_id" json:"post_id"`
+	PostID int    `reindex:"post_id,,dense" json:"post_id"`
 	Text   string `reindex:"text,text"  json:"text"`
 	User   string `json:"user"`
 	Time   int64  `json:"time"`
+	Likes  int    `json:"likes,omitempty"`
 }
 
 type HabrPost struct {
-	ID       int            `reindex:"id,tree,pk" json:"id"`
-	Time     int64          `reindex:"time,tree"  json:"time"`
-	Text     string         `reindex:"text,-"  json:"text"`
-	Title    string         `reindex:"title,-"  json:"title"`
-	User     string         `reindex:"user" json:"user"`
+	ID        int      `reindex:"id,tree,pk" json:"id"`
+	Time      int64    `reindex:"time,tree,dense"  json:"time"`
+	Text      string   `reindex:"text,-"  json:"text"`
+	Title     string   `reindex:"title,-"  json:"title"`
+	User      string   `reindex:"user" json:"user"`
+	Hubs      []string `reindex:"hubs" json:"hubs"`
+	Tags      []string `reindex:"tags" json:"tags"`
+	Likes     int      `reindex:"likes" json:"likes,omitempty"`
+	Favorites int      `reindex:"favorites" json:"favorites,omitempty"`
+	Views     int      `reindex:"views" json:"views"`
+	HasImage  bool     `json:"has_image,omitempty"`
+
 	Comments []*HabrComment `reindex:"comments,,joined" json:"comments,omitempty"`
-	_        struct{}       `reindex:"title+text=search,text,composite"`
+	_        struct{}       `reindex:"title+text=search,text,composite;dense"`
 }
 
 type Repo struct {
@@ -173,72 +180,71 @@ func (r *Repo) RestoreFromFiles(path string) {
 		post := HabrPost{}
 		err = json.Unmarshal(jsonItem, &post)
 		if err != nil {
-			fmt.Printf("err parse %s\n", err.Error())
+			log.Printf("Error parse file %s: %s\n", f.Name(), err.Error())
 		}
 
 		for _, comment := range post.Comments {
 			comment.PostID = post.ID
-			err = r.db.Upsert("comments", comment, "id=serial()")
+			err = r.db.Upsert("comments", comment)
 			if err != nil {
-				fmt.Printf("err upsert %s\n", err.Error())
+				log.Printf("Error upsert comment %d from file %s: %s\n", comment.ID, f.Name(), err.Error())
 			}
 		}
 
-		if (i % 1000) == 0 {
-			fmt.Printf("processed %d files\n", i)
+		if (i != 0 && (i%1000) == 0) || i == len(files)-1 {
+			fmt.Printf("processed %d files (from %d)\n", i+1, len(files))
 		}
 
 		post.Comments = post.Comments[:0]
 		err = r.db.Upsert("posts", post)
 		if err != nil {
-			fmt.Printf("err upsert %s\n", err.Error())
+			log.Printf("Error upsert post from file %s: %s\n", f.Name(), err.Error())
 		}
 
 	}
 
 }
 
-func (r *Repo) Warmup() {
-	// Build index
-	it := r.db.Query("posts").Where("search", reindexer.EQ, "xx").Exec()
-	if it.Error() != nil {
-		panic(it.Error())
-	}
-	it.Close()
-	it = r.db.Query("comments").Where("text", reindexer.EQ, "xx").Exec()
-	if it.Error() != nil {
-		panic(it.Error())
-	}
-	it.Close()
-}
-
 func (r *Repo) Init() {
 
-	os.RemoveAll("/tmp/reindex")
 	r.db = reindexer.NewReindex("builtin:///tmp/reindex")
 	r.db.SetLogger(logger)
-
-	err := r.db.OpenNamespace("posts", reindexer.DefaultNamespaceOptions(), HabrPost{})
-	if err != nil {
-		panic(err)
-	}
-
-	err = r.db.OpenNamespace("comments", reindexer.DefaultNamespaceOptions(), HabrComment{})
-	if err != nil {
-		panic(err)
-	}
-
 	cfg := reindexer.DefaultFtFastConfig()
 	cfg.MaxTyposInWord = 0
 	cfg.LogLevel = reindexer.INFO
-	r.db.ConfigureIndex("posts", "search", cfg)
+
+	err := r.db.OpenNamespace("comments", reindexer.DefaultNamespaceOptions(), HabrComment{})
+	if err != nil {
+		panic(err)
+	}
 	r.db.ConfigureIndex("comments", "text", cfg)
+	it := r.db.Query("comments").Where("text", reindexer.EQ, "xx").Exec()
+	if it.Error() != nil {
+		panic(it.Error())
+	}
+	it.Close()
+
+	err = r.db.OpenNamespace("posts", reindexer.DefaultNamespaceOptions(), HabrPost{})
+	if err != nil {
+		panic(err)
+	}
+
+	r.db.ConfigureIndex("posts", "search", cfg)
+	it = r.db.Query("posts").Where("search", reindexer.EQ, "xx").Exec()
+	if it.Error() != nil {
+		panic(it.Error())
+	}
+	it.Close()
 
 }
 
 type Logger struct {
 }
 
-func (l *Logger) Printf(level int, format string, msg ...interface{}) { log.Printf(format, msg...) }
+func (l *Logger) Printf(level int, format string, msg ...interface{}) {
+	if level <= reindexer.INFO {
+		log.Printf(format, msg...)
+	}
+}
 
 var logger = &Logger{}
