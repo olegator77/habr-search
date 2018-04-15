@@ -89,6 +89,7 @@ func main() {
 		os.RemoveAll("/tmp/reindex")
 		repo.Init()
 		repo.RestoreFromFiles(*dumpPostsPath)
+		repo.Done()
 	default:
 		usage()
 	}

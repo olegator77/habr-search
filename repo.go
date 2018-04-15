@@ -293,6 +293,11 @@ func (r *Repo) Init() {
 
 }
 
+func (r *Repo) Done() {
+	r.db.CloseNamespace("posts")
+	r.db.CloseNamespace("comments")
+}
+
 type Logger struct {
 }
 
