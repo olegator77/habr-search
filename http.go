@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
+	"path"
 	"strconv"
+	"time"
 
 	"github.com/buaazp/fasthttprouter"
 	"github.com/valyala/fasthttp"
@@ -76,7 +79,7 @@ func convertPosts(in []*HabrPost) (out []HabrPostView) {
 			Link:     fmt.Sprintf("https://habrahabr.ru/post/%d/", post.ID),
 		}
 		if post.HasImage {
-			pv.Image = fmt.Sprintf("http://habr-demo.reindexer.org/images/%d.jpg", post.ID)
+			pv.Image = fmt.Sprintf("/images/%d.jpeg", post.ID)
 		}
 
 		out = append(out, pv)
@@ -88,7 +91,6 @@ func SearchPostsHandler(ctx *fasthttp.RequestCtx) {
 	text := string(ctx.QueryArgs().Peek("query"))
 	limit, _ := ctx.QueryArgs().GetUint("limit")
 	offset, _ := ctx.QueryArgs().GetUint("offset")
-
 	items, total, err := repo.SearchPosts(text, offset, limit)
 
 	if err != nil {
@@ -162,6 +164,32 @@ func GetPostHandler(ctx *fasthttp.RequestCtx) {
 
 	respJSON(ctx, item)
 }
+func GetDocHandler(ctx *fasthttp.RequestCtx) {
+	urlPath := string(ctx.Path())
+
+	target := path.Join(*webRootPath, urlPath)
+
+	f, err := os.Stat(target)
+	if err != nil || f.IsDir() {
+		target = path.Join(*webRootPath, "index.html")
+	}
+
+	log.Printf("%s", target)
+
+	ctx.SendFile(target)
+
+}
+
+func HandlerWrapper(handler func(ctx *fasthttp.RequestCtx)) func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+
+		t := time.Now()
+		handler(ctx)
+		latency := time.Now().Sub(t)
+
+		log.Printf("%s %s %s %d %d %v", ctx.RemoteIP().String(), string(ctx.Method()), string(ctx.RequestURI()), ctx.Response.StatusCode(), len(ctx.Response.Body()), latency)
+	}
+}
 
 func StartHTTP(addr string) {
 	router := fasthttprouter.New()
@@ -169,8 +197,13 @@ func StartHTTP(addr string) {
 	router.GET("/api/search_comments", SearchCommentsHandler)
 	router.GET("/api/posts/:id", GetPostHandler)
 	router.GET("/api/posts", GetPostsHandler)
+	router.GET("/images/*filepath", GetDocHandler)
+	router.GET("/static/*filepath", GetDocHandler)
+	router.GET("/index.html", GetDocHandler)
+	router.GET("/search", GetDocHandler)
+	router.GET("/", GetDocHandler)
 	log.Printf("Starting listen fasthttp on %s", addr)
-	if err := fasthttp.ListenAndServe(addr, router.Handler); err != nil {
+	if err := fasthttp.ListenAndServe(addr, HandlerWrapper(router.Handler)); err != nil {
 		panic(err)
 	}
 }

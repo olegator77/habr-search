@@ -2,9 +2,12 @@ package main
 
 // Import package
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
+	"unicode"
 
 	"io/ioutil"
 
@@ -55,12 +58,64 @@ func applyOffsetAndLimit(query *reindexer.Query, offset, limit int) {
 	}
 }
 
+func textToReindexFullTextDSL(fields string, input string) string {
+	var output bytes.Buffer
+	// Boost fields
+	if len(fields) > 0 {
+		output.WriteByte('@')
+		output.WriteString(fields)
+		output.WriteByte(' ')
+	}
+
+	interm := false
+	term := 0
+	termLen := 0
+
+	// trim input spaces, and add trailing space
+	input = strings.Trim(input, " ") + " "
+	for _, r := range input {
+		if (unicode.IsDigit(r) || unicode.IsLetter(r)) && !interm {
+			if term == 0 && len(input) >= 3 {
+				// enable suffix search from 2 symbols
+				output.WriteByte('*')
+			}
+			termLen = 0
+			interm = true
+		}
+
+		if !unicode.IsDigit(r) && !unicode.IsLetter(r) && !strings.Contains("-+/", string(r)) && interm {
+			switch {
+			case termLen >= 3:
+				// enable typos search from 3 symbols in term
+				output.WriteString("~*")
+			case termLen >= 2:
+				// enable prefix from 2 symbol or on 2-nd+ term
+				output.WriteString("*")
+			}
+			output.WriteByte(' ')
+			interm = false
+			term++
+		}
+		if interm {
+			output.WriteRune(r)
+			termLen++
+		}
+	}
+
+	if termLen <= 2 && term == 1 {
+		return "xxxxxxxxx"
+	}
+
+	return output.String()
+}
+
 func (r *Repo) SearchPosts(text string, offset, limit int) ([]*HabrPost, int, error) {
 
 	query := repo.db.Query("posts").
-		Match("search", text).
-		Functions("text = snippet(<b>,</b>,20,20,...,...\n)").
+		Match("search", textToReindexFullTextDSL("*^1,title^1.3", text)).
 		ReqTotal()
+
+	query.Functions("text = snippet(<b>,</b>,20,20, ...,... <br/>)")
 
 	applyOffsetAndLimit(query, offset, limit)
 
@@ -132,7 +187,7 @@ func (r *Repo) GetPosts(offset int, limit int, user string, startTime int, endTi
 		return nil, 0, err
 	}
 
-	items := make([]*HabrPost, 0, 10)
+	items := make([]*HabrPost, 0, it.Count())
 	for it.Next() {
 		item := it.Object()
 		items = append(items, item.(*HabrPost))
@@ -142,11 +197,11 @@ func (r *Repo) GetPosts(offset int, limit int, user string, startTime int, endTi
 }
 
 func (r *Repo) SearchComments(text string, offset, limit int) ([]*HabrComment, int, error) {
-
 	query := repo.db.Query("comments").
 		ReqTotal().
-		Match("text", text).
-		Functions("text = snippet(<b>,</b>,20,20,...,...\n)")
+		Match("text", textToReindexFullTextDSL("", text))
+
+	query.Functions("text = snippet(<b>,</b>,20,20, ...,... <br/>)")
 
 	applyOffsetAndLimit(query, offset, limit)
 
@@ -157,7 +212,7 @@ func (r *Repo) SearchComments(text string, offset, limit int) ([]*HabrComment, i
 		return nil, 0, err
 	}
 
-	items := make([]*HabrComment, 0, 10)
+	items := make([]*HabrComment, 0, it.Count())
 	for it.Next() {
 		item := it.Object()
 		items = append(items, item.(*HabrComment))
@@ -242,7 +297,7 @@ type Logger struct {
 }
 
 func (l *Logger) Printf(level int, format string, msg ...interface{}) {
-	if level <= reindexer.INFO {
+	if level <= reindexer.TRACE {
 		log.Printf(format, msg...)
 	}
 }

@@ -13,12 +13,13 @@ import (
 
 var repo Repo
 
-var numParallelImports = 6
+var numParallelImports = 5
 
 var httpAddr = flag.String("httpaddr", ":8881", "HTTP listen address:port")
 var importStartID = flag.Int("startid", 1, "Import post start ID")
 var importFinishID = flag.Int("finishid", 360000, "Import post finish ID")
 var dumpPostsPath = flag.String("dumppath", "/tmp/habrimport", "Path, where imported posts are stored")
+var webRootPath = flag.String("webrootpath", "/Users/ogerasimov/habrdemo", "Path, where HTML static data is hosted")
 
 func dload(wg *sync.WaitGroup, dlChannel chan int) {
 	for i := range dlChannel {
@@ -58,17 +59,22 @@ func downloadFiles() {
 	wg.Wait()
 }
 
+func usage() {
+	fmt.Printf(
+		"usage: %s <command> [<args>]\n"+
+			"The available commands are:\n"+
+			" run       Run HTTP API server\n"+
+			" import    Import posts from habrhabr site\n"+
+			" load      Load imported data to reindexer\n",
+		os.Args[0],
+	)
+	os.Exit(-1)
+
+}
+
 func main() {
 	if len(os.Args) < 2 {
-		fmt.Printf(
-			"usage: %s <command> [<args>]\n"+
-				"The available commands are:\n"+
-				" run       Run HTTP API server\n"+
-				" import    Import posts from habrhabr site\n"+
-				" load      Load imported data to reindexer\n",
-			os.Args[0],
-		)
-		os.Exit(-1)
+		usage()
 	}
 
 	flag.CommandLine.Parse(os.Args[2:])
@@ -83,7 +89,8 @@ func main() {
 		os.RemoveAll("/tmp/reindex")
 		repo.Init()
 		repo.RestoreFromFiles(*dumpPostsPath)
+	default:
+		usage()
 	}
 
-	// downloadFiles()
 }
