@@ -91,7 +91,9 @@ func SearchPostsHandler(ctx *fasthttp.RequestCtx) {
 	text := string(ctx.QueryArgs().Peek("query"))
 	limit, _ := ctx.QueryArgs().GetUint("limit")
 	offset, _ := ctx.QueryArgs().GetUint("offset")
-	items, total, err := repo.SearchPosts(text, offset, limit)
+	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
+	sortDesc, _ := ctx.QueryArgs().GetUint("sort_desc")
+	items, total, err := repo.SearchPosts(text, offset, limit, sortBy, sortDesc > 0)
 
 	if err != nil {
 		respError(ctx, 502, err)
@@ -134,8 +136,10 @@ func SearchCommentsHandler(ctx *fasthttp.RequestCtx) {
 	text := string(ctx.QueryArgs().Peek("query"))
 	limit, _ := ctx.QueryArgs().GetUint("limit")
 	offset, _ := ctx.QueryArgs().GetUint("offset")
+	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
+	sortDesc, _ := ctx.QueryArgs().GetUint("sort_desc")
 
-	items, total, err := repo.SearchComments(text, offset, limit)
+	items, total, err := repo.SearchComments(text, offset, limit, sortBy, sortDesc > 0)
 
 	if err != nil {
 		respError(ctx, 502, err)

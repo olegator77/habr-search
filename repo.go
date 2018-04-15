@@ -17,12 +17,13 @@ import (
 )
 
 type HabrComment struct {
-	ID     int    `reindex:"id,,pk" json:"id"`
-	PostID int    `reindex:"post_id,,dense" json:"post_id"`
-	Text   string `reindex:"text,text"  json:"text"`
-	User   string `json:"user"`
-	Time   int64  `json:"time"`
-	Likes  int    `json:"likes,omitempty"`
+	ID     int      `reindex:"id,,pk" json:"id"`
+	PostID int      `reindex:"post_id,,dense" json:"post_id"`
+	Text   string   `reindex:"text,-,dense"  json:"text"`
+	User   string   `reindex:"user,-,dense" json:"user"`
+	Time   int64    `reindex:"time,-,dense" json:"time"`
+	Likes  int      `reindex:"likes,-,dense" json:"likes,omitempty"`
+	_      struct{} `reindex:"text+user=search,text,composite;dense"`
 }
 
 type HabrPost struct {
@@ -33,13 +34,13 @@ type HabrPost struct {
 	User      string   `reindex:"user" json:"user"`
 	Hubs      []string `reindex:"hubs" json:"hubs"`
 	Tags      []string `reindex:"tags" json:"tags"`
-	Likes     int      `reindex:"likes" json:"likes,omitempty"`
-	Favorites int      `reindex:"favorites" json:"favorites,omitempty"`
-	Views     int      `reindex:"views" json:"views"`
+	Likes     int      `reindex:"likes,-,dense" json:"likes,omitempty"`
+	Favorites int      `reindex:"favorites,-,dense" json:"favorites,omitempty"`
+	Views     int      `reindex:"views,-,dense" json:"views"`
 	HasImage  bool     `json:"has_image,omitempty"`
 
 	Comments []*HabrComment `reindex:"comments,,joined" json:"comments,omitempty"`
-	_        struct{}       `reindex:"title+text=search,text,composite;dense"`
+	_        struct{}       `reindex:"title+text+user=search,text,composite;dense"`
 }
 
 type Repo struct {
@@ -59,7 +60,7 @@ func applyOffsetAndLimit(query *reindexer.Query, offset, limit int) {
 }
 
 func textToReindexFullTextDSL(fields string, input string) string {
-	var output bytes.Buffer
+	var output, cur bytes.Buffer
 	// Boost fields
 	if len(fields) > 0 {
 		output.WriteByte('@')
@@ -73,49 +74,57 @@ func textToReindexFullTextDSL(fields string, input string) string {
 
 	// trim input spaces, and add trailing space
 	input = strings.Trim(input, " ") + " "
+
 	for _, r := range input {
 		if (unicode.IsDigit(r) || unicode.IsLetter(r)) && !interm {
-			if term == 0 && len(input) >= 3 {
-				// enable suffix search from 2 symbols
-				output.WriteByte('*')
-			}
-			termLen = 0
+			cur.Reset()
 			interm = true
+			termLen = 0
 		}
 
 		if !unicode.IsDigit(r) && !unicode.IsLetter(r) && !strings.Contains("-+/", string(r)) && interm {
+
 			switch {
 			case termLen >= 3:
 				// enable typos search from 3 symbols in term
+				output.WriteString("*")
+				output.Write(cur.Bytes())
 				output.WriteString("~*")
 			case termLen >= 2:
 				// enable prefix from 2 symbol or on 2-nd+ term
-				output.WriteString("*")
+				output.Write(cur.Bytes())
+				output.WriteString("~*")
+			default:
+				output.Write(cur.Bytes())
 			}
 			output.WriteByte(' ')
 			interm = false
 			term++
 		}
 		if interm {
-			output.WriteRune(r)
+			cur.WriteRune(r)
 			termLen++
 		}
 	}
 
 	if termLen <= 2 && term == 1 {
-		return "xxxxxxxxx"
+		return ""
 	}
 
 	return output.String()
 }
 
-func (r *Repo) SearchPosts(text string, offset, limit int) ([]*HabrPost, int, error) {
+func (r *Repo) SearchPosts(text string, offset, limit int, sortBy string, sortDesc bool) ([]*HabrPost, int, error) {
 
 	query := repo.db.Query("posts").
-		Match("search", textToReindexFullTextDSL("*^1,title^1.3", text)).
+		Match("search", textToReindexFullTextDSL("*^0.7,title^1.2", text)).
 		ReqTotal()
 
-	query.Functions("text = snippet(<b>,</b>,20,20, ...,... <br/>)")
+	query.Functions("text = snippet(<b>,</b>,30,30, ...,... <br/>)")
+
+	if len(sortBy) != 0 {
+		query.Sort(sortBy, sortDesc)
+	}
 
 	applyOffsetAndLimit(query, offset, limit)
 
@@ -125,7 +134,7 @@ func (r *Repo) SearchPosts(text string, offset, limit int) ([]*HabrPost, int, er
 		return nil, 0, err
 	}
 
-	items := make([]*HabrPost, 0, 10)
+	items := make([]*HabrPost, 0, it.Count())
 	for it.Next() {
 		item := it.Object()
 		items = append(items, item.(*HabrPost))
@@ -196,12 +205,16 @@ func (r *Repo) GetPosts(offset int, limit int, user string, startTime int, endTi
 	return items, it.TotalCount(), nil
 }
 
-func (r *Repo) SearchComments(text string, offset, limit int) ([]*HabrComment, int, error) {
+func (r *Repo) SearchComments(text string, offset, limit int, sortBy string, sortDesc bool) ([]*HabrComment, int, error) {
 	query := repo.db.Query("comments").
 		ReqTotal().
-		Match("text", textToReindexFullTextDSL("", text))
+		Match("search", textToReindexFullTextDSL("", text))
 
 	query.Functions("text = snippet(<b>,</b>,20,20, ...,... <br/>)")
+
+	if len(sortBy) != 0 {
+		query.Sort(sortBy, sortDesc)
+	}
 
 	applyOffsetAndLimit(query, offset, limit)
 
@@ -267,13 +280,19 @@ func (r *Repo) Init() {
 	cfg := reindexer.DefaultFtFastConfig()
 	cfg.MaxTyposInWord = 0
 	cfg.LogLevel = reindexer.INFO
+	cfg.Bm25Boost = 0.35
+	cfg.DistanceBoost = 2.0
+	cfg.MinRelevancy = 0.2
+	// cfg.StopWords = []string{"делать", "работать", "например", "получить", "данные", "стоит", "имеет", "компании", "случае", "код", "образом", "возможность", "работает", "свой", "т", "данных",
+	// 	"сделать", "0", "позволяет", "помощью", "сразу", "4", "3", "6", "момент", "таким", "работы", "2", "использовать",
+	// 	"с", "достаточно", "является", "часть", "10", "поэтому", "количество"}
 
 	err := r.db.OpenNamespace("comments", reindexer.DefaultNamespaceOptions(), HabrComment{})
 	if err != nil {
 		panic(err)
 	}
-	r.db.ConfigureIndex("comments", "text", cfg)
-	it := r.db.Query("comments").Where("text", reindexer.EQ, "xx").Exec()
+	r.db.ConfigureIndex("comments", "search", cfg)
+	it := r.db.Query("comments").Where("search", reindexer.EQ, "xx").Exec()
 	if it.Error() != nil {
 		panic(it.Error())
 	}
