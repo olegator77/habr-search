@@ -12,3 +12,5 @@ ENV PATH=$PATH:$GOROOT/bin:$GOPATH/bin
 RUN go get github.com/buaazp/fasthttprouter && \
     go get github.com/PuerkitoBio/goquery && \
     go get github.com/nfnt/resize
+
+RUN apt-get -y install libgoogle-perftools-dev

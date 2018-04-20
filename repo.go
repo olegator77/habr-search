@@ -13,7 +13,7 @@ import (
 
 	"git.itv.restr.im/itv-backend/reindexer"
 	_ "git.itv.restr.im/itv-backend/reindexer/bindings/builtin"
-	// _ "git.itv.restr.im/itv-backend/reindexer/pprof"
+	_ "git.itv.restr.im/itv-backend/reindexer/pprof"
 )
 
 type HabrComment struct {
@@ -23,7 +23,7 @@ type HabrComment struct {
 	User   string   `reindex:"user,-,dense" json:"user"`
 	Time   int64    `reindex:"time,-,dense" json:"time"`
 	Likes  int      `reindex:"likes,-,dense" json:"likes,omitempty"`
-	_      struct{} `reindex:"text+user=search,text,composite;dense"`
+	_      struct{} `reindex:"text+user=search,text,composite"`
 }
 
 type HabrPost struct {
@@ -40,11 +40,28 @@ type HabrPost struct {
 	HasImage  bool     `json:"has_image,omitempty"`
 
 	Comments []*HabrComment `reindex:"comments,,joined" json:"comments,omitempty"`
-	_        struct{}       `reindex:"title+text+user=search,text,composite;dense"`
+	_        struct{}       `reindex:"title+text+user=search,text,composite"`
+}
+
+type FTConfig struct {
+	Bm25Boost      float64 `json:"bm25_boost"`
+	Bm25Weight     float64 `json:"bm25_weight"`
+	DistanceBoost  float64 `json:"distance_boost"`
+	DistanceWeight float64 `json:"distance_weight"`
+	TermLenBoost   float64 `json:"term_len_boost"`
+	TermLenWeight  float64 `json:"term_len_weight"`
+	MinRelevancy   float64 `json:"min_relevancy"`
+	Fields         string  `json:"fields"`
+}
+
+type RepoConfig struct {
+	PostsFt    FTConfig `json:"posts"`
+	CommentsFt FTConfig `json:"comments"`
 }
 
 type Repo struct {
-	db *reindexer.Reindexer
+	db  *reindexer.Reindexer
+	cfg RepoConfig
 }
 
 func applyOffsetAndLimit(query *reindexer.Query, offset, limit int) {
@@ -84,6 +101,9 @@ func textToReindexFullTextDSL(fields string, input string) string {
 
 		if !unicode.IsDigit(r) && !unicode.IsLetter(r) && !strings.Contains("-+/", string(r)) && interm {
 
+			if term > 0 {
+				output.WriteByte('+')
+			}
 			switch {
 			case termLen >= 3:
 				// enable typos search from 3 symbols in term
@@ -117,7 +137,7 @@ func textToReindexFullTextDSL(fields string, input string) string {
 func (r *Repo) SearchPosts(text string, offset, limit int, sortBy string, sortDesc bool) ([]*HabrPost, int, error) {
 
 	query := repo.db.Query("posts").
-		Match("search", textToReindexFullTextDSL("*^0.7,title^1.2", text)).
+		Match("search", textToReindexFullTextDSL(r.cfg.PostsFt.Fields, text)).
 		ReqTotal()
 
 	query.Functions("text = snippet(<b>,</b>,30,30, ...,... <br/>)")
@@ -208,9 +228,9 @@ func (r *Repo) GetPosts(offset int, limit int, user string, startTime int, endTi
 func (r *Repo) SearchComments(text string, offset, limit int, sortBy string, sortDesc bool) ([]*HabrComment, int, error) {
 	query := repo.db.Query("comments").
 		ReqTotal().
-		Match("search", textToReindexFullTextDSL("", text))
+		Match("search", textToReindexFullTextDSL(r.cfg.CommentsFt.Fields, text))
 
-	query.Functions("text = snippet(<b>,</b>,20,20, ...,... <br/>)")
+	query.Functions("text = snippet(<b>,</b>,30,30, ...,... <br/>)")
 
 	if len(sortBy) != 0 {
 		query.Sort(sortBy, sortDesc)
@@ -273,43 +293,102 @@ func (r *Repo) RestoreFromFiles(path string) {
 
 }
 
+func (r *Repo) setFTConfig(ns string, newCfg FTConfig) error {
+
+	cfg := reindexer.DefaultFtFastConfig()
+	cfg.MaxTyposInWord = 1
+	cfg.LogLevel = reindexer.TRACE
+	cfg.Bm25Boost = newCfg.Bm25Boost
+	cfg.Bm25Weight = newCfg.Bm25Weight
+	cfg.DistanceBoost = newCfg.DistanceBoost
+	cfg.DistanceWeight = newCfg.DistanceWeight
+	cfg.MinRelevancy = newCfg.MinRelevancy
+
+	err := r.db.ConfigureIndex(ns, "search", cfg)
+
+	if err != nil {
+		return err
+	}
+
+	switch ns {
+	case "posts":
+		r.cfg.PostsFt = newCfg
+	case "comments":
+		r.cfg.CommentsFt = newCfg
+	default:
+		return fmt.Errorf("Unknown namespace %s", ns)
+	}
+	return nil
+}
+
+func (r *Repo) SetFTConfig(ns string, newCfg FTConfig) error {
+	err := r.setFTConfig(ns, newCfg)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(r.cfg)
+	if err != nil {
+		return err
+	}
+	return ioutil.WriteFile("repo.cfg", data, 0666)
+}
+
 func (r *Repo) Init() {
 
 	r.db = reindexer.NewReindex("builtin:///tmp/reindex")
 	r.db.SetLogger(logger)
-	cfg := reindexer.DefaultFtFastConfig()
-	cfg.MaxTyposInWord = 0
-	cfg.LogLevel = reindexer.INFO
-	cfg.Bm25Boost = 0.35
-	cfg.DistanceBoost = 2.0
-	cfg.MinRelevancy = 0.2
+
+	cfgFile, err := ioutil.ReadFile("repo.cfg")
+
+	if err != nil {
+		err = json.Unmarshal(cfgFile, &r.cfg)
+	}
+	if err != nil {
+		r.cfg.PostsFt = FTConfig{
+			Bm25Boost:      0.1,
+			Bm25Weight:     0.3,
+			DistanceBoost:  2.0,
+			DistanceWeight: 0.5,
+			MinRelevancy:   0.2,
+			Fields:         "*^0.4,user^1.0,title^1.6",
+		}
+		r.cfg.CommentsFt = FTConfig{
+			Bm25Boost:      0.1,
+			Bm25Weight:     0.3,
+			DistanceBoost:  2.0,
+			DistanceWeight: 0.5,
+			MinRelevancy:   0.2,
+			Fields:         "",
+		}
+	}
 	// cfg.StopWords = []string{"делать", "работать", "например", "получить", "данные", "стоит", "имеет", "компании", "случае", "код", "образом", "возможность", "работает", "свой", "т", "данных",
 	// 	"сделать", "0", "позволяет", "помощью", "сразу", "4", "3", "6", "момент", "таким", "работы", "2", "использовать",
 	// 	"с", "достаточно", "является", "часть", "10", "поэтому", "количество"}
 
-	err := r.db.OpenNamespace("comments", reindexer.DefaultNamespaceOptions(), HabrComment{})
-	if err != nil {
+	if err = r.db.OpenNamespace("comments", reindexer.DefaultNamespaceOptions(), HabrComment{}); err != nil {
 		panic(err)
 	}
-	r.db.ConfigureIndex("comments", "search", cfg)
+	if err = r.SetFTConfig("comments", r.cfg.CommentsFt); err != nil {
+		panic(err)
+	}
+
 	it := r.db.Query("comments").Where("search", reindexer.EQ, "xx").Exec()
 	if it.Error() != nil {
 		panic(it.Error())
 	}
 	it.Close()
 
-	err = r.db.OpenNamespace("posts", reindexer.DefaultNamespaceOptions(), HabrPost{})
-	if err != nil {
+	if err = r.db.OpenNamespace("posts", reindexer.DefaultNamespaceOptions(), HabrPost{}); err != nil {
 		panic(err)
 	}
-
-	r.db.ConfigureIndex("posts", "search", cfg)
+	if err = r.SetFTConfig("posts", r.cfg.PostsFt); err != nil {
+		panic(err)
+	}
 	it = r.db.Query("posts").Where("search", reindexer.EQ, "xx").Exec()
 	if it.Error() != nil {
 		panic(it.Error())
 	}
 	it.Close()
-
 }
 
 func (r *Repo) Done() {

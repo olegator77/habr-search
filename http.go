@@ -87,7 +87,7 @@ func convertPosts(in []*HabrPost) (out []HabrPostView) {
 	return out
 }
 
-func SearchPostsHandler(ctx *fasthttp.RequestCtx) {
+func SearchPosts(ctx *fasthttp.RequestCtx) {
 	text := string(ctx.QueryArgs().Peek("query"))
 	limit, _ := ctx.QueryArgs().GetUint("limit")
 	offset, _ := ctx.QueryArgs().GetUint("offset")
@@ -132,7 +132,7 @@ func GetPostsHandler(ctx *fasthttp.RequestCtx) {
 	respJSON(ctx, resp)
 }
 
-func SearchCommentsHandler(ctx *fasthttp.RequestCtx) {
+func SearchComments(ctx *fasthttp.RequestCtx) {
 	text := string(ctx.QueryArgs().Peek("query"))
 	limit, _ := ctx.QueryArgs().GetUint("limit")
 	offset, _ := ctx.QueryArgs().GetUint("offset")
@@ -155,6 +155,19 @@ func SearchCommentsHandler(ctx *fasthttp.RequestCtx) {
 	respJSON(ctx, resp)
 }
 
+func SearchHandler(ctx *fasthttp.RequestCtx) {
+	sortBy := string(ctx.QueryArgs().Peek("search_type"))
+	switch sortBy {
+	case "posts", "":
+		SearchPosts(ctx)
+	case "comments":
+		SearchComments(ctx)
+	default:
+		respError(ctx, 401, fmt.Errorf("Invalid search_type. Valid values are: 'comments' or 'posts'"))
+	}
+
+}
+
 func GetPostHandler(ctx *fasthttp.RequestCtx) {
 	id, _ := strconv.Atoi(ctx.UserValue("id").(string))
 	withComments, _ := ctx.QueryArgs().GetUint("with_comments")
@@ -168,6 +181,24 @@ func GetPostHandler(ctx *fasthttp.RequestCtx) {
 
 	respJSON(ctx, item)
 }
+
+func ConfigureHandler(ctx *fasthttp.RequestCtx) {
+	ns := ctx.UserValue("ns").(string)
+	var newCfg FTConfig
+	err := json.Unmarshal(ctx.PostBody(), &newCfg)
+	if err != nil {
+		respError(ctx, 502, err)
+		return
+	}
+	err = repo.SetFTConfig(ns, newCfg)
+	if err != nil {
+		respError(ctx, 502, err)
+		return
+	}
+	ctx.WriteString("ok")
+	return
+}
+
 func GetDocHandler(ctx *fasthttp.RequestCtx) {
 	urlPath := string(ctx.Path())
 
@@ -197,10 +228,11 @@ func HandlerWrapper(handler func(ctx *fasthttp.RequestCtx)) func(ctx *fasthttp.R
 
 func StartHTTP(addr string) {
 	router := fasthttprouter.New()
-	router.GET("/api/search_posts", SearchPostsHandler)
-	router.GET("/api/search_comments", SearchCommentsHandler)
+	router.GET("/api/search_posts", SearchHandler)
+	router.GET("/api/search", SearchHandler)
 	router.GET("/api/posts/:id", GetPostHandler)
 	router.GET("/api/posts", GetPostsHandler)
+	router.POST("/api/configure/:ns", ConfigureHandler)
 	router.GET("/images/*filepath", GetDocHandler)
 	router.GET("/static/*filepath", GetDocHandler)
 	router.GET("/index.html", GetDocHandler)
