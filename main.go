@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"os"
 	"path/filepath"
 	"sync"
@@ -13,13 +14,14 @@ import (
 
 var repo Repo
 
-var numParallelImports = 5
+var numParallelImports = 4
 
 var httpAddr = flag.String("httpaddr", ":8881", "HTTP listen address:port")
-var importStartID = flag.Int("startid", 1, "Import post start ID")
-var importFinishID = flag.Int("finishid", 360000, "Import post finish ID")
-var dumpPostsPath = flag.String("dumppath", "/tmp/habrimport", "Path, where imported posts are stored")
-var webRootPath = flag.String("webrootpath", "/Users/ogerasimov/habrdemo", "Path, where HTML static data is hosted")
+var importStartID = flag.Int("startid", 353800, "Import post start ID")
+var importFinishID = flag.Int("finishid", 355000, "Import post finish ID")
+var dumpPostsPath = flag.String("dumppath", "/Users/ogerasimov/habrimport", "Path, where imported posts are stored")
+var webRootPath = flag.String("webrootpath", "/Users/ogerasimov/habrdemo-static", "Path, where HTML static data is hosted")
+var syncTimeout = flag.Int("synctimeout", 30, "Sync timeout in minutes")
 
 func dload(wg *sync.WaitGroup, dlChannel chan int) {
 	for i := range dlChannel {
@@ -31,11 +33,11 @@ func dload(wg *sync.WaitGroup, dlChannel chan int) {
 			ioutil.WriteFile(fmt.Sprintf("%s/%d.json", *dumpPostsPath, i), data, 0666)
 
 			if imgData != nil {
-				ioutil.WriteFile(fmt.Sprintf("%s/%d.jpeg", filepath.Join(*dumpPostsPath, "images"), i), imgData, 0666)
+				ioutil.WriteFile(fmt.Sprintf("%s/%d.jpeg", filepath.Join(*webRootPath, "images"), i), imgData, 0666)
 
 			}
 		} else {
-			fmt.Printf("ID %d - error %s\n", i, err.Error())
+			// fmt.Printf("ID %d - error %s\n", i, err.Error())
 		}
 	}
 	wg.Done()
@@ -45,7 +47,7 @@ func downloadFiles() {
 	dlChannel := make(chan int)
 	wg := sync.WaitGroup{}
 	os.Mkdir(*dumpPostsPath, os.ModePerm)
-	os.Mkdir(filepath.Join(*dumpPostsPath, "images"), os.ModePerm)
+	os.Mkdir(filepath.Join(*webRootPath, "images"), os.ModePerm)
 
 	for i := 0; i < numParallelImports; i++ {
 		wg.Add(1)
@@ -57,6 +59,19 @@ func downloadFiles() {
 
 	close(dlChannel)
 	wg.Wait()
+}
+
+func syncDataRoutine() {
+	for {
+		time.Sleep(time.Duration(*syncTimeout) * time.Minute)
+		log.Printf("Syncing...")
+		log.Printf("Downloading posts from ID %d to %d", *importStartID, *importFinishID)
+		downloadFiles()
+		log.Printf("Updating posts from ID %d to %d", *importStartID, *importFinishID)
+		repo.RestoreRangeFromFiles(*dumpPostsPath, *importStartID, *importFinishID)
+		repo.Done()
+		repo.Init()
+	}
 }
 
 func usage() {
@@ -82,13 +97,15 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		repo.Init()
+		repo.WarmUp()
+		go syncDataRoutine()
 		StartHTTP(*httpAddr)
 	case "import":
 		downloadFiles()
 	case "load":
-		os.RemoveAll("/tmp/reindex")
+		os.RemoveAll("/var/lib/reindexer/habr")
 		repo.Init()
-		repo.RestoreFromFiles(*dumpPostsPath)
+		repo.RestoreAllFromFiles(*dumpPostsPath)
 		repo.Done()
 	default:
 		usage()

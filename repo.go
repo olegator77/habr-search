@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 	"unicode"
 
@@ -60,8 +61,9 @@ type RepoConfig struct {
 }
 
 type Repo struct {
-	db  *reindexer.Reindexer
-	cfg RepoConfig
+	db    *reindexer.Reindexer
+	cfg   RepoConfig
+	ready bool
 }
 
 func applyOffsetAndLimit(query *reindexer.Query, offset, limit int) {
@@ -120,6 +122,9 @@ func textToReindexFullTextDSL(fields string, input string) string {
 			output.WriteByte(' ')
 			interm = false
 			term++
+			if term > 8 {
+				break
+			}
 		}
 		if interm {
 			cur.WriteRune(r)
@@ -136,6 +141,10 @@ func textToReindexFullTextDSL(fields string, input string) string {
 
 func (r *Repo) SearchPosts(text string, offset, limit int, sortBy string, sortDesc bool) ([]*HabrPost, int, error) {
 
+	if !r.ready {
+		return nil, 0, fmt.Errorf("repo is not ready")
+	}
+
 	query := repo.db.Query("posts").
 		Match("search", textToReindexFullTextDSL(r.cfg.PostsFt.Fields, text)).
 		ReqTotal()
@@ -149,6 +158,7 @@ func (r *Repo) SearchPosts(text string, offset, limit int, sortBy string, sortDe
 	applyOffsetAndLimit(query, offset, limit)
 
 	it := query.Exec()
+	defer it.Close()
 
 	if err := it.Error(); err != nil {
 		return nil, 0, err
@@ -164,6 +174,9 @@ func (r *Repo) SearchPosts(text string, offset, limit int, sortBy string, sortDe
 }
 
 func (r *Repo) GetPost(id int, withComments bool) (*HabrPost, error) {
+	if !r.ready {
+		return nil, fmt.Errorf("repo is not ready")
+	}
 
 	query := repo.db.Query("posts").
 		WhereInt("id", reindexer.EQ, id).
@@ -174,6 +187,7 @@ func (r *Repo) GetPost(id int, withComments bool) (*HabrPost, error) {
 	}
 
 	it := query.Exec()
+	defer it.Close()
 
 	obj, err := it.FetchOne()
 
@@ -185,6 +199,9 @@ func (r *Repo) GetPost(id int, withComments bool) (*HabrPost, error) {
 }
 
 func (r *Repo) GetPosts(offset int, limit int, user string, startTime int, endTime int, withComments bool) ([]*HabrPost, int, error) {
+	if !r.ready {
+		return nil, 0, fmt.Errorf("repo is not ready")
+	}
 
 	query := repo.db.Query("posts").
 		ReqTotal()
@@ -226,6 +243,10 @@ func (r *Repo) GetPosts(offset int, limit int, user string, startTime int, endTi
 }
 
 func (r *Repo) SearchComments(text string, offset, limit int, sortBy string, sortDesc bool) ([]*HabrComment, int, error) {
+	if !r.ready {
+		return nil, 0, fmt.Errorf("repo is not ready")
+	}
+
 	query := repo.db.Query("comments").
 		ReqTotal().
 		Match("search", textToReindexFullTextDSL(r.cfg.CommentsFt.Fields, text))
@@ -254,50 +275,65 @@ func (r *Repo) SearchComments(text string, offset, limit int, sortBy string, sor
 	return items, it.TotalCount(), nil
 }
 
-func (r *Repo) RestoreFromFiles(path string) {
+func (r *Repo) updatePostFromFile(filePath string) {
+	jsonItem, err := ioutil.ReadFile(filePath)
+	if err != nil {
+		log.Printf("Error read file %s: %s\n", filePath, err.Error())
+	}
+	post := HabrPost{}
+	err = json.Unmarshal(jsonItem, &post)
+	if err != nil {
+		log.Printf("Error parse file %s: %s\n", filePath, err.Error())
+	}
+
+	for _, comment := range post.Comments {
+		comment.PostID = post.ID
+		err = r.db.Upsert("comments", comment)
+		if err != nil {
+			log.Printf("Error upsert comment %d from file %s: %s\n", comment.ID, filePath, err.Error())
+		}
+	}
+
+	post.Comments = post.Comments[:0]
+	err = r.db.Upsert("posts", post)
+	if err != nil {
+		log.Printf("Error upsert post from file %s: %s\n", filePath, err.Error())
+	}
+
+}
+
+func (r *Repo) RestoreAllFromFiles(path string) {
 	files, err := ioutil.ReadDir(path)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	for i, f := range files {
-		jsonItem, err := ioutil.ReadFile(path + "/" + f.Name())
-		if err != nil {
-			panic(err)
-		}
-		post := HabrPost{}
-		err = json.Unmarshal(jsonItem, &post)
-		if err != nil {
-			log.Printf("Error parse file %s: %s\n", f.Name(), err.Error())
-		}
-
-		for _, comment := range post.Comments {
-			comment.PostID = post.ID
-			err = r.db.Upsert("comments", comment)
-			if err != nil {
-				log.Printf("Error upsert comment %d from file %s: %s\n", comment.ID, f.Name(), err.Error())
-			}
-		}
-
+		r.updatePostFromFile(path + "/" + f.Name())
 		if (i != 0 && (i%1000) == 0) || i == len(files)-1 {
 			fmt.Printf("processed %d files (from %d)\n", i+1, len(files))
 		}
-
-		post.Comments = post.Comments[:0]
-		err = r.db.Upsert("posts", post)
-		if err != nil {
-			log.Printf("Error upsert post from file %s: %s\n", f.Name(), err.Error())
-		}
-
 	}
+}
 
+func (r *Repo) RestoreRangeFromFiles(path string, startID, finishID int) {
+
+	cnt := 0
+	for id := startID; id < finishID; id++ {
+		fileName := fmt.Sprintf("%s/%d.json", path, id)
+		if _, err := os.Stat(fileName); err == nil {
+			r.updatePostFromFile(fileName)
+			cnt++
+		}
+	}
+	fmt.Printf("processed %d files\n", cnt+1)
 }
 
 func (r *Repo) setFTConfig(ns string, newCfg FTConfig) error {
 
 	cfg := reindexer.DefaultFtFastConfig()
 	cfg.MaxTyposInWord = 1
-	cfg.LogLevel = reindexer.TRACE
+	cfg.LogLevel = reindexer.INFO
 	cfg.Bm25Boost = newCfg.Bm25Boost
 	cfg.Bm25Weight = newCfg.Bm25Weight
 	cfg.DistanceBoost = newCfg.DistanceBoost
@@ -335,16 +371,20 @@ func (r *Repo) SetFTConfig(ns string, newCfg FTConfig) error {
 
 func (r *Repo) Init() {
 
-	r.db = reindexer.NewReindex("builtin:///tmp/reindex")
-	r.db.SetLogger(logger)
-
-	cfgFile, err := ioutil.ReadFile("repo.cfg")
-
-	if err != nil {
-		err = json.Unmarshal(cfgFile, &r.cfg)
+	if r.db == nil {
+		r.db = reindexer.NewReindex("builtin:///var/lib/reindexer/habr")
+		r.db.SetLogger(logger)
 	}
+	cfgFile, err := ioutil.ReadFile("repo.cfg")
+	newCfg := RepoConfig{}
+
 	if err != nil {
-		r.cfg.PostsFt = FTConfig{
+		err = json.Unmarshal(cfgFile, &newCfg)
+	}
+
+	if err != nil {
+
+		newCfg.PostsFt = FTConfig{
 			Bm25Boost:      0.1,
 			Bm25Weight:     0.3,
 			DistanceBoost:  2.0,
@@ -352,7 +392,7 @@ func (r *Repo) Init() {
 			MinRelevancy:   0.2,
 			Fields:         "*^0.4,user^1.0,title^1.6",
 		}
-		r.cfg.CommentsFt = FTConfig{
+		newCfg.CommentsFt = FTConfig{
 			Bm25Boost:      0.1,
 			Bm25Weight:     0.3,
 			DistanceBoost:  2.0,
@@ -368,30 +408,35 @@ func (r *Repo) Init() {
 	if err = r.db.OpenNamespace("comments", reindexer.DefaultNamespaceOptions(), HabrComment{}); err != nil {
 		panic(err)
 	}
-	if err = r.SetFTConfig("comments", r.cfg.CommentsFt); err != nil {
+	if err = r.setFTConfig("comments", newCfg.CommentsFt); err != nil {
 		panic(err)
 	}
-
-	it := r.db.Query("comments").Where("search", reindexer.EQ, "xx").Exec()
-	if it.Error() != nil {
-		panic(it.Error())
-	}
-	it.Close()
 
 	if err = r.db.OpenNamespace("posts", reindexer.DefaultNamespaceOptions(), HabrPost{}); err != nil {
 		panic(err)
 	}
-	if err = r.SetFTConfig("posts", r.cfg.PostsFt); err != nil {
+	if err = r.setFTConfig("posts", newCfg.PostsFt); err != nil {
 		panic(err)
 	}
-	it = r.db.Query("posts").Where("search", reindexer.EQ, "xx").Exec()
+	repo.WarmUp()
+}
+
+func (r *Repo) WarmUp() {
+	it := r.db.Query("comments").Where("search", reindexer.EQ, "").Exec()
 	if it.Error() != nil {
-		panic(it.Error())
+		log.Print(it.Error().Error())
 	}
+	it.Close()
+	it = r.db.Query("posts").Where("search", reindexer.EQ, "").Exec()
+	if it.Error() != nil {
+		log.Print(it.Error().Error())
+	}
+	r.ready = true
 	it.Close()
 }
 
 func (r *Repo) Done() {
+	r.ready = false
 	r.db.CloseNamespace("posts")
 	r.db.CloseNamespace("comments")
 }

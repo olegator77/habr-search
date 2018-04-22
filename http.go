@@ -28,6 +28,7 @@ type HabrPostView struct {
 type PostsResponce struct {
 	Items      []HabrPostView `json:"items"`
 	TotalCount int            `json:"total_count,omitempty"`
+	ElapsedMs  int64          `json:"elapsed_ms,omitempty"`
 	Success    bool           `json:"success"`
 }
 
@@ -39,6 +40,7 @@ type HabrCommentView struct {
 type CommentsResponce struct {
 	Items      []HabrCommentView `json:"items"`
 	TotalCount int               `json:"total_count,omitempty"`
+	ElapsedMs  int64             `json:"elapsed_ms,omitempty"`
 	Success    bool              `json:"success"`
 }
 
@@ -55,6 +57,7 @@ func respError(ctx *fasthttp.RequestCtx, httpCode int, err error) {
 func respJSON(ctx *fasthttp.RequestCtx, data interface{}) {
 	ctx.SetStatusCode(200)
 	ctx.SetContentType("application/json; charset=utf-8")
+	ctx.Response.Header.Add("Connection", "keep-alive")
 	ret, _ := json.Marshal(data)
 	ctx.Write(ret)
 }
@@ -93,6 +96,8 @@ func SearchPosts(ctx *fasthttp.RequestCtx) {
 	offset, _ := ctx.QueryArgs().GetUint("offset")
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	sortDesc, _ := ctx.QueryArgs().GetUint("sort_desc")
+
+	t := time.Now()
 	items, total, err := repo.SearchPosts(text, offset, limit, sortBy, sortDesc > 0)
 
 	if err != nil {
@@ -103,6 +108,7 @@ func SearchPosts(ctx *fasthttp.RequestCtx) {
 	resp := PostsResponce{
 		Items:      convertPosts(items),
 		TotalCount: total,
+		ElapsedMs:  int64(time.Now().Sub(t) / time.Millisecond),
 		Success:    true,
 	}
 
@@ -117,6 +123,7 @@ func GetPostsHandler(ctx *fasthttp.RequestCtx) {
 	endTime, _ := ctx.QueryArgs().GetUint("end_time")
 	withComments, _ := ctx.QueryArgs().GetUint("with_comments")
 
+	t := time.Now()
 	items, total, err := repo.GetPosts(offset, limit, user, startTime, endTime, withComments > 0)
 
 	if err != nil {
@@ -126,6 +133,7 @@ func GetPostsHandler(ctx *fasthttp.RequestCtx) {
 	resp := PostsResponce{
 		Items:      convertPosts(items),
 		TotalCount: total,
+		ElapsedMs:  int64(time.Now().Sub(t) / time.Millisecond),
 		Success:    true,
 	}
 
@@ -139,6 +147,7 @@ func SearchComments(ctx *fasthttp.RequestCtx) {
 	sortBy := string(ctx.QueryArgs().Peek("sort_by"))
 	sortDesc, _ := ctx.QueryArgs().GetUint("sort_desc")
 
+	t := time.Now()
 	items, total, err := repo.SearchComments(text, offset, limit, sortBy, sortDesc > 0)
 
 	if err != nil {
@@ -149,6 +158,7 @@ func SearchComments(ctx *fasthttp.RequestCtx) {
 	resp := CommentsResponce{
 		Items:      convertComments(items),
 		TotalCount: total,
+		ElapsedMs:  int64(time.Now().Sub(t) / time.Millisecond),
 		Success:    true,
 	}
 
@@ -222,17 +232,25 @@ func HandlerWrapper(handler func(ctx *fasthttp.RequestCtx)) func(ctx *fasthttp.R
 		handler(ctx)
 		latency := time.Now().Sub(t)
 
-		log.Printf("%s %s %s %d %d %v", ctx.RemoteIP().String(), string(ctx.Method()), string(ctx.RequestURI()), ctx.Response.StatusCode(), len(ctx.Response.Body()), latency)
+		log.Printf(
+			"%s %s %s %d %d %v %s",
+			ctx.RemoteIP().String(),
+			string(ctx.Method()),
+			string(ctx.RequestURI()),
+			ctx.Response.StatusCode(),
+			len(ctx.Response.Body()),
+			latency,
+			string(ctx.UserAgent()),
+		)
 	}
 }
 
 func StartHTTP(addr string) {
 	router := fasthttprouter.New()
-	router.GET("/api/search_posts", SearchHandler)
 	router.GET("/api/search", SearchHandler)
 	router.GET("/api/posts/:id", GetPostHandler)
 	router.GET("/api/posts", GetPostsHandler)
-	router.POST("/api/configure/:ns", ConfigureHandler)
+	// router.POST("/api/configure/:ns", ConfigureHandler)
 	router.GET("/images/*filepath", GetDocHandler)
 	router.GET("/static/*filepath", GetDocHandler)
 	router.GET("/index.html", GetDocHandler)
