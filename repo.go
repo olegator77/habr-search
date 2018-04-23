@@ -12,9 +12,9 @@ import (
 
 	"io/ioutil"
 
-	"git.itv.restr.im/itv-backend/reindexer"
-	_ "git.itv.restr.im/itv-backend/reindexer/bindings/builtin"
-	_ "git.itv.restr.im/itv-backend/reindexer/pprof"
+	"github.com/restream/reindexer"
+	_ "github.com/restream/reindexer/bindings/builtin"
+	_ "github.com/restream/reindexer/pprof"
 )
 
 type HabrComment struct {

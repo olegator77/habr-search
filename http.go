@@ -228,13 +228,20 @@ func GetDocHandler(ctx *fasthttp.RequestCtx) {
 func HandlerWrapper(handler func(ctx *fasthttp.RequestCtx)) func(ctx *fasthttp.RequestCtx) {
 	return func(ctx *fasthttp.RequestCtx) {
 
+		ip := ctx.RemoteIP().String()
+		if ip != "127.0.0.1" && ip != "188.120.235.218" {
+			ctx.SetStatusCode(401)
+			ctx.WriteString("bad IP - gone")
+			return
+		}
+
 		t := time.Now()
 		handler(ctx)
 		latency := time.Now().Sub(t)
 
 		log.Printf(
 			"%s %s %s %d %d %v %s",
-			ctx.RemoteIP().String(),
+			ip,
 			string(ctx.Method()),
 			string(ctx.RequestURI()),
 			ctx.Response.StatusCode(),
